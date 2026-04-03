@@ -1,9 +1,13 @@
 #pragma once
 #include <stdint.h>
 
-// ── Wiring — change these to match your board layout ─────────────────────────
+// ── Wiring — override via build flags (platformio.ini) if needed ──────────────
+#ifndef CRSF_RX_PIN
 #define CRSF_RX_PIN  25   // GPIO connected to ELRS receiver TX
+#endif
+#ifndef CRSF_TX_PIN
 #define CRSF_TX_PIN  26   // GPIO connected to ELRS receiver RX (also reset line)
+#endif
 // ─────────────────────────────────────────────────────────────────────────────
 
 #define CRSF_CHANNEL_COUNT 16
