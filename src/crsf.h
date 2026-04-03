@@ -12,6 +12,8 @@
 
 // Initialize Serial1 at 420000 baud on CRSF_RX_PIN / CRSF_TX_PIN
 void crsf_init();
+void crsf_set_enabled(bool enable);
+bool crsf_is_enabled();
 
 // Call every loop iteration — reads and parses incoming CRSF frames non-blockingly
 void crsf_update();

@@ -6,3 +6,7 @@
 
 void web_init();
 void web_update();   // call every loop iteration
+
+// Simple in-memory log surfaced on the web UI.
+void web_log(const char* msg);
+void web_logf(const char* fmt, ...);

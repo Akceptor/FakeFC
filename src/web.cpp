@@ -1,9 +1,36 @@
 #include "web.h"
-#include "crsf.h"
+#include "rx.h"
 #include <WiFi.h>
 #include <WebServer.h>
+#include <stdarg.h>
 
 static WebServer server(80);
+
+// ── Log buffer ───────────────────────────────────────────────────────────────
+#define LOG_LINES 48
+#define LOG_LINE_MAX 96
+static char  log_lines[LOG_LINES][LOG_LINE_MAX];
+static uint8_t log_head = 0;   // next write position
+static uint8_t log_count = 0;  // number of valid lines
+
+static void log_push(const char* msg) {
+    uint32_t t = millis();
+    snprintf(log_lines[log_head], LOG_LINE_MAX, "%lu ms: %s",
+             (unsigned long)t, msg);
+    log_head = (uint8_t)((log_head + 1) % LOG_LINES);
+    if (log_count < LOG_LINES) log_count++;
+}
+
+void web_log(const char* msg) { log_push(msg); }
+
+void web_logf(const char* fmt, ...) {
+    char buf[LOG_LINE_MAX];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    log_push(buf);
+}
 
 // ── HTML page ─────────────────────────────────────────────────────────────────
 // Polls /channels every 100 ms and draws a bar graph for each channel.
@@ -19,15 +46,19 @@ static const char PAGE[] PROGMEM = R"(<!DOCTYPE html>
   .lbl { width: 40px; text-align: right; margin-right: 8px; color: #aaa; }
   .bar { height: 16px; background: #4af; min-width: 2px; transition: width 0.08s; }
   .val { margin-left: 8px; width: 44px; }
+  #log { margin-top: 20px; white-space: pre; font-size: 12px; color: #bbb; }
 </style>
 </head>
 <body>
 <h2>RC Channels</h2>
 <div id="channels"></div>
+<h2>Log</h2>
+<div id="log">loading...</div>
 <script>
 const N = 16;
 const MIN = 1000, MAX = 2000, RANGE = MAX - MIN;
 const div = document.getElementById('channels');
+const logDiv = document.getElementById('log');
 
 // Build rows once
 for (let i = 0; i < N; i++) {
@@ -52,6 +83,16 @@ async function update() {
   setTimeout(update, 100);
 }
 update();
+
+async function updateLog() {
+  try {
+    const r = await fetch('/log');
+    const d = await r.json();
+    logDiv.textContent = d.join('\n');
+  } catch(e) {}
+  setTimeout(updateLog, 500);
+}
+updateLog();
 </script>
 </body>
 </html>
@@ -64,11 +105,29 @@ static void handle_root() {
 }
 
 static void handle_channels() {
-    const uint16_t* ch = crsf_get_channels();
+    const uint16_t* ch = rx_get_channels();
     String json = "[";
-    for (uint8_t i = 0; i < CRSF_CHANNEL_COUNT; i++) {
+    for (uint8_t i = 0; i < RX_CHANNEL_COUNT; i++) {
         if (i) json += ',';
         json += ch[i];
+    }
+    json += ']';
+    server.send(200, "application/json", json);
+}
+
+static void handle_log() {
+    String json = "[";
+    uint8_t start = (log_head + LOG_LINES - log_count) % LOG_LINES;
+    for (uint8_t i = 0; i < log_count; i++) {
+        uint8_t idx = (start + i) % LOG_LINES;
+        if (i) json += ',';
+        json += '"';
+        // Escape quotes and backslashes minimally
+        for (const char* p = log_lines[idx]; *p; ++p) {
+            if (*p == '"' || *p == '\\') json += '\\';
+            json += *p;
+        }
+        json += '"';
     }
     json += ']';
     server.send(200, "application/json", json);
@@ -80,7 +139,9 @@ void web_init() {
     WiFi.softAP("FakeFC");   // open AP, no password
     server.on("/",        handle_root);
     server.on("/channels", handle_channels);
+    server.on("/log",      handle_log);
     server.begin();
+    web_log("web: started AP FakeFC at 192.168.4.1");
 }
 
 void web_update() {

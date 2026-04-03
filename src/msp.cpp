@@ -1,5 +1,5 @@
 #include "msp.h"
-#include "crsf.h"
+#include "rx.h"
 #include <Arduino.h>
 #include <string.h>
 
@@ -11,6 +11,7 @@
 #define MSP_BUILD_INFO           5
 #define MSP_NAME                 10
 #define MSP_FEATURE_CONFIG       36
+#define MSP_SET_FEATURE_CONFIG   37
 #define MSP_RX_MAP               64
 #define MSP_CF_SERIAL_CONFIG     54
 #define MSP_SET_CF_SERIAL_CONFIG 55
@@ -25,6 +26,9 @@
 #define MSP_BOXNAMES             116
 #define MSP_ACC_TRIM             240
 #define MSP_RX_CONFIG            144
+#define MSP_RX_CONFIG_V1         44
+#define MSP_SET_RX_CONFIG        145
+#define MSP_SET_RX_CONFIG_V1     45
 #define MSP_STATUS_EX            150
 #define MSP_UID                  160
 
@@ -270,8 +274,8 @@ static void msp_handle(uint8_t cmd) {
         // 16 RC channel values as uint16 LE.  The configurator polls this at
         // ~10 Hz to draw the live bar graph in the Receiver tab.
         case MSP_RC: {
-            const uint16_t* ch = crsf_get_channels();
-            for (uint8_t i = 0; i < CRSF_CHANNEL_COUNT; i++) w16(p, ch[i]);
+            const uint16_t* ch = rx_get_channels();
+            for (uint8_t i = 0; i < RX_CHANNEL_COUNT; i++) w16(p, ch[i]);
             msp_send(cmd, buf, p - buf);  // 32 bytes
             break;
         }
@@ -286,13 +290,11 @@ static void msp_handle(uint8_t cmd) {
             msp_send(cmd, buf, p - buf);  // 6 bytes
             break;
 
-        // ── MSP_RX_CONFIG (144) ───────────────────────────────────────────────
-        // RX configuration block.  The key field is serialrx_provider = 11
-        // (SERIALRX_CRSF) which tells the configurator we are running CRSF.
-        // ── MSP_RX_CONFIG (144) ───────────────────────────────────────────────
-        // 32-byte layout for API 1.44.  serialrx_provider = 9 = CRSF.
+        // ── MSP_RX_CONFIG (44 / 144) ──────────────────────────────────────────
+        // 32-byte layout for API 1.44.  serialrx_provider reflects saved config.
         case MSP_RX_CONFIG:
-            *p++ = 9;       // [0]    serialrx_provider: CRSF (index 9)
+        case MSP_RX_CONFIG_V1:
+            *p++ = rx_get_serial_provider();  // [0] serialrx_provider
             w16(p, 1900);   // [1-2]  stick_max
             w16(p, 1500);   // [3-4]  stick_center
             w16(p, 1100);   // [5-6]  stick_min
@@ -319,11 +321,9 @@ static void msp_handle(uint8_t cmd) {
             break;
 
         // ── MSP_FEATURE_CONFIG (36) ───────────────────────────────────────────
-        // u32 bitmask of enabled features.  FEATURE_RX_SERIAL = bit 6 (0x40)
-        // must be set; without it the receiver tab disables its controls
-        // because the configurator treats the RX source as non-serial.
+        // u32 bitmask of enabled features (includes receiver mode selection).
         case MSP_FEATURE_CONFIG:
-            w32(p, (1 << 3));  // FEATURE_RX_SERIAL (bit 3)
+            w32(p, rx_get_feature_mask());
             msp_send(cmd, buf, p - buf);  // 4 bytes
             break;
 
@@ -353,7 +353,8 @@ static void msp_handle(uint8_t cmd) {
             *p++ = 0;   w16(p, 1);   *p++ = 5; *p++ = 0; *p++ = 0; *p++ = 0;
             // Port 1 (UART2 / ESP32 Serial1): SerialRX + CRSF — function 64
             // ELRS Configurator will see this and send: serialpassthrough 1 <baud>
-            *p++ = 1;   w16(p, 64);  *p++ = 0; *p++ = 0; *p++ = 0; *p++ = 0;
+            *p++ = 1;   w16(p, rx_serial_enabled() ? 64 : 0);
+            *p++ = 0; *p++ = 0; *p++ = 0; *p++ = 0;
             // Port 2 (UART3): unused
             *p++ = 2;   w16(p, 0);   *p++ = 0; *p++ = 0; *p++ = 0; *p++ = 0;
             msp_send(cmd, buf, p - buf);  // 21 bytes
@@ -363,6 +364,27 @@ static void msp_handle(uint8_t cmd) {
         // The configurator sends this when the user applies serial port changes.
         // We accept and ACK it (no-op: UART1 is always SerialRX in this firmware).
         case MSP_SET_CF_SERIAL_CONFIG:
+            msp_send(cmd, NULL, 0);
+            break;
+
+        // ── MSP_SET_FEATURE_CONFIG (37) ───────────────────────────────────────
+        case MSP_SET_FEATURE_CONFIG:
+            if (msp_size >= 4) {
+                uint32_t mask = (uint32_t)msp_payload[0]
+                              | ((uint32_t)msp_payload[1] << 8)
+                              | ((uint32_t)msp_payload[2] << 16)
+                              | ((uint32_t)msp_payload[3] << 24);
+                rx_set_feature_mask(mask);
+            }
+            msp_send(cmd, NULL, 0);
+            break;
+
+        // ── MSP_SET_RX_CONFIG (45 / 145) ──────────────────────────────────────
+        case MSP_SET_RX_CONFIG:
+        case MSP_SET_RX_CONFIG_V1:
+            if (msp_size >= 1) {
+                rx_set_serial_provider(msp_payload[0]);
+            }
             msp_send(cmd, NULL, 0);
             break;
 
@@ -407,8 +429,8 @@ static void msp_handle(uint8_t cmd) {
         // If bytes_received climbs but frame_count stays 0 → parser issue.
         // If bytes_received stays 0 → no bytes from receiver (wiring/power).
         case MSP_ANALOG: {
-            uint32_t bc = crsf_get_bytes_received();
-            uint32_t fc = crsf_get_frame_count();
+            uint32_t bc = rx_get_bytes_received();
+            uint32_t fc = rx_get_frame_count();
             *p++ = (uint8_t)(fc & 0xFF);   // vbat (0.1V units) = frame counter LSB
             w16(p, 0);                     // amperage
             *p++ = (uint8_t)(bc & 0xFF);   // rssi = byte counter LSB

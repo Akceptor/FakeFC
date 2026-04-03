@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include "crsf.h"
+#include "rx.h"
 #include "msp.h"
 #include "passthrough.h"
 #include "web.h"
@@ -17,7 +17,7 @@
 
 void setup() {
     Serial.begin(115200);  // USB serial: MSP + CLI
-    crsf_init();           // Serial1 at 420000 on GPIO25/26
+    rx_init();             // CRSF Serial1 + PPM init, apply saved RX mode
     msp_init();
     passthrough_init();
     web_init();            // WiFi AP "FakeFC" → http://192.168.4.1
@@ -36,7 +36,7 @@ void loop() {
 
     // Parse any CRSF frames that arrived from the ELRS receiver since last loop.
     // Freshly decoded channels are immediately available to msp_process_byte
-    // via crsf_get_channels() the next time MSP_RC is requested.
-    crsf_update();
+    // via rx_get_channels() the next time MSP_RC is requested.
+    rx_update();
     web_update();
 }
